@@ -1013,7 +1013,9 @@ def generate_response_glm(weight, x_mat, noise_std, family_type, class_method='p
         temp_mat = np.exp(response_y)   # matrix of n by K where K = 1 for binomials
 
         if 'binomial' in family_type.lower():
-            temp_mat = np.concatenate((1-temp_mat, temp_mat), axis=1)    # inflate temp_mat to 2 classes
+            ntemp_mat = temp_mat + 1
+            btemp_mat = temp_mat / ntemp_mat
+            temp_mat = np.concatenate((1-btemp_mat, btemp_mat), axis=1)    # inflate temp_mat to 2 classes
 
         response_y = derive_discrete_response(temp_mat, class_method, class_margin)
 
@@ -2340,7 +2342,7 @@ def evaluate_early_stopping(metric_list, stop_round, tolerance, bigger_is_better
     start_index = metric_len - 2*stop_round     # start index for reference
     all_moving_values = []
 
-    # this part is purely used to make sure we agree with ScoreKeeper.java implementation, not efficient all
+    # this part is purely used to make sure we agree with ScoreKeeper.java implementation, not efficient at all
     for index in range(stop_round+1):
         index_start = start_index+index
         all_moving_values.append(sum(metric_list[index_start:index_start+stop_round]))

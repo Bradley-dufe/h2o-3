@@ -17,6 +17,7 @@ from tests import pyunit_utils
 from h2o.estimators.glm import H2OGeneralizedLinearEstimator
 from h2o.grid.grid_search import H2OGridSearch
 
+
 class Test_glm_random_grid_search:
     """
     This class is created to test the three stopping conditions for randomized gridsearch using
@@ -31,7 +32,6 @@ class Test_glm_random_grid_search:
     1. test1_glm_random_grid_search_model_number: this test will not put any stopping conditions
     on randomized search.  The purpose here is to make sure that randomized search will give us all possible
     hyper-parameter combinations.
-
     2. test2_glm_random_grid_search_max_model: this test the stopping condition of setting the max_model in
     search criteria;
     3. test3_glm_random_grid_search_max_runtime_secs: this test the stopping condition max_runtime_secs
@@ -181,8 +181,8 @@ class Test_glm_random_grid_search:
         #  DEBUGGING setup_data, remember to comment them out once done.
         # self.train_col_count = 3
         # self.train_row_count = 200
-        # self.max_real_number = 5
-        # self.max_int_number = 5
+        # self.max_real_number = 1
+        # self.max_int_number = 1
         # end DEBUGGING
 
         if 'gaussian' in self.family:       # increase data range
@@ -212,7 +212,7 @@ class Test_glm_random_grid_search:
         self.x_indices = list(range(self.y_index))
 
         # set response to be categorical for classification tasks
-        if ('binomial' in self.family):
+        if 'binomial' in self.family:
             self.training1_data[self.y_index] = self.training1_data[self.y_index].round().asfactor()
 
             # check to make sure all response classes are represented, otherwise, quit
@@ -259,7 +259,6 @@ class Test_glm_random_grid_search:
                                          random.randint(1, self.max_int_number), self.max_int_val, self.min_int_val,
                                          random.randint(1, self.max_real_number), self.max_real_val, self.min_real_val)
 
-
         # change the value of lambda parameters to be from 0 to self.lambda_scale instead of 0 to 1.
         if "lambda" in list(self.hyper_params):
             self.hyper_params["lambda"] = [self.lambda_scale * x for x in self.hyper_params["lambda"]]
@@ -297,7 +296,6 @@ class Test_glm_random_grid_search:
 
             with open(json_file,'wb') as test_file:
                 json.dump(self.hyper_params, test_file)
-
 
         else:   # all tests have passed.  Delete sandbox if if was not wiped before
             pyunit_utils.make_Rsandbox_dir(self.current_dir, self.test_name, False)
@@ -367,7 +365,6 @@ class Test_glm_random_grid_search:
         grid_model.train(x=self.x_indices, y=self.y_index, training_frame=self.training1_data)
 
         number_model_built = len(grid_model)    # count actual number of models built
-
 
         print("Maximum model limit is {0}.  Number of models built is {1}".format(search_criteria["max_models"],
                                                                                   number_model_built))

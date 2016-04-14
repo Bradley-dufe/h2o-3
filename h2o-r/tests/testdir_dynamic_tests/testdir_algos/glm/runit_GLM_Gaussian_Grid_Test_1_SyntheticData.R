@@ -115,7 +115,8 @@ test.GLM.Gaussian.Grid.Test1.SyntheticData <- function() {
   hyper_parameters = generateHyperparameterError(hyper_parameters, error_number, parameter_names, bad_parameter_to_choose)
 
   # start grid search 
-  try((glm_grid1 = h2o.grid("glm", grid_id="glm_grid1", x=predictor_names, y=response_name, training_frame=train_data, 
+  grid_name = paste("glm_grid", as.integer(Sys.time()), sep="_")
+  try((glm_grid1 = h2o.grid("glm", grid_id=grid_name, x=predictor_names, y=response_name, training_frame=train_data, 
                             family=family, nfolds=nfolds, hyper_params=hyper_parameters)))
 
   if (exists("glm_grid1")) {  # error introduced in hyper-parameter is not fatal
@@ -162,7 +163,7 @@ generateHyperparameterError <- function(hyper_parameters, error_number, hyper_pa
   parameters_indices = unique(floor(runif(number_of_errors, 1, parameter_number)))
   
   for (parameter_index in parameters_indices) {
-    param_name = hyper_parameters_names[parameter_index]   # name of hyper-parameter to change
+    param_name = hyper_parameters_names[parameter_index]   # name of hyper-parameters to change
     param_indices_2_play = bad_parameter_indices[[parameter_index]]
     
     if (error_number == 0) {  # insert bad parameter value from other hyper-parameter lists

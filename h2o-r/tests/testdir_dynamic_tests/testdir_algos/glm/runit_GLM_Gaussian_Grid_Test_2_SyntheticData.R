@@ -182,5 +182,6 @@ generateModelparameter <- function(hyper_parameters, error_number, hyper_paramet
   return(model_parameters)
 }
 
-doTest("GLM Gaussian Grid Test: PUBDEV-1843, subtask 8, test 2.  Check for redundant parameter specification in model and hyper-parameters.", test.GLM.Gaussian.Grid.Test2.SyntheticData)
+doTest("GLM Gaussian Grid Test: PUBDEV-1843, subtask 8, test 2.  Check for redundant parameter specification.",
+       test.GLM.Gaussian.Grid.Test2.SyntheticData)
 

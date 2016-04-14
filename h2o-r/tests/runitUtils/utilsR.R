@@ -442,12 +442,49 @@ genRegressionData <- function(col_number, row_number, max_w_value, min_w_value, 
   data = matrix(runif(col_number*row_number, min_p_value, max_p_value), row_number, col_number)
   weight = matrix(runif(col_number, min_w_value, max_w_value), col_number, 1)  # generate random weight
   noise = matrix(rnorm(row_number, mean=0, sd=noise_std), row_number, 1)        # generate random noise
-  bias = runif(1, min_w_value, max_w_value) * matrix(rep(1, row_number), row_number, 1)   # random bias
+  bias = matrix(rep(runif(1, min_w_value, max_w_value), row_number), row_number, 1)   # random bias
 
   response = data %*% weight + bias + noise   # form the response
 
   training_data = as.data.frame(cbind(data, response))  # generate data frame from predictor and response
 
+  return(training_data)
+}
+
+
+#----------------------------------------------------------------------
+# genBinaryData generates training data set for Binomial
+# classification for GLM algo.  For the Binomial family, the relationship between
+# the response Y and predictor vector X is assumed to be 
+# Prob(Y = 1|X) = exp(W^T * X + e)/(1+exp(W^T * X + e))
+# where e is the random Gaussian noise added to the response.  
+#
+# Parameters:  col_number -- Integer, number of predictors
+#              row_number -- Integer, number of training data samples
+#              max_w_value -- maximum weight/bias value allowed
+#              min_w_value -- minimum weight/bias value allowed
+#              max_p_value -- maximum predictor value allowed
+#              min_p_value -- minimum predictor value allowed
+#              noise_std -- noise standard deviation that is used to generate random noise
+#
+# Returns:     data frame containing the predictors and response as the last column.  The 
+#              response in this case is integer starting from 0 to class_number-1
+#----------------------------------------------------------------------
+genBinaryData <- function(col_number, row_number, max_w_value, min_w_value, max_p_value, min_p_value, noise_std) {
+  data = matrix(runif(col_number*row_number, min_p_value, max_p_value), row_number, col_number)
+  weight = matrix(runif(col_number, min_w_value, max_w_value), col_number, 1)  # generate random weight
+  noise = matrix(rnorm(row_number, mean=0, sd=noise_std), row_number, 1)        # generate random noise
+  bias = matrix(rep(runif(1, min_w_value, max_w_value), row_number), row_number, 1)   # random bias
+  
+  temp = exp(data %*% weight + bias + noise)   # form the response
+  prob1 = temp / (1+temp)   # form probability of y=1
+  
+  # calculate response as class with maximum probability
+  response = matrix(0, row_number, 1)
+  response[prob1>0.5] = 1
+
+  training_data = as.data.frame(cbind(data, response))  # generate data frame from predictor and response
+  
   return(training_data)
 }
 
@@ -522,10 +559,10 @@ find_grid_runtime <- function(model_ids) {
 # Returns:     boolean representing test success/failure
 #----------------------------------------------------------------------
 runGLMMetricStop <- function(predictor_names, response_name, train_data, family, nfolds, hyper_parameters, 
-                             search_criteria, is_decreasing, possible_model_number) {
+                             search_criteria, is_decreasing, possible_model_number, grid_name) {
 
   # start grid search
-  glm_grid1 = h2o.grid("glm", grid_id="glm_grid1", x=predictor_names, y=response_name, training_frame=train_data,
+  glm_grid1 = h2o.grid("glm", grid_id=grid_name, x=predictor_names, y=response_name, training_frame=train_data,
                        family=family, nfolds=nfolds, hyper_params=hyper_parameters, search_criteria=search_criteria)
   
   tolerance = search_criteria[["stopping_tolerance"]]
@@ -636,4 +673,34 @@ sort_model_metrics_by_time <- function(model_ids, metric_name) {
   }
   
   return(sorted_metrics)
+}
+
+#----------------------------------------------------------------------
+# summarize_failures will generate a failure message describing what tests for the
+# randomized grid search has failed.  There are four tests conducted for randomized
+# grid search.  A test_failed_array is passed as argument.  A failed test will have
+# a value of 1.
+#
+# Parameters:  test_failed_array -- list of integer denoting if a test fail or pass.
+#
+# Returns:     failure_message : text describing failure messages
+#----------------------------------------------------------------------
+summarize_failures <- function(test_failed_array) {
+  failure_message = ""
+  if (test_failed_array[1] == 1)
+    failure_message = "test 1 failed"
+
+  if (test_failed_array[2] == 1)
+    failure_message = paste(failure_message, "test 2 test max_models stopping condition failed", sep = ", ")
+  
+  if (test_failed_array[3] == 1)
+    failure_message = paste(failure_message, "test 3 test max_runtime_secs stopping condition failed", sep = ", ")
+  
+  if (test_failed_array[4] == 1)
+    failure_message = paste(failure_message, "test 4 test decreasing stopping metric failed", sep = ", ")
+  
+  if (test_failed_array[5] == 1)
+    failure_message = paste(failure_message, "test 5 test increasing stopping metric failed", sep = ", ")
+
+  return(failure_message)
 }

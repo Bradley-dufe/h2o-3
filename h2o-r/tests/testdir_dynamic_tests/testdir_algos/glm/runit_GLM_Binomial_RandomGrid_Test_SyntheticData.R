@@ -4,7 +4,7 @@ source("../../../runitUtils/utilsR.R")
 
 # PUBDEV-1843: Grid testing.  Subtask 9.
 # This class is created to test the three stopping conditions for randomized gridsearch using
-# GLM Gaussian family.  The three stopping conditions are :
+# GLM Binomial family.  The three stopping conditions are :
 # 
 # 1. max_runtime_secs:
 # 2. max_models:
@@ -18,7 +18,7 @@ source("../../../runitUtils/utilsR.R")
 # test3. Third, test the stopping condition max_runtime_secs in search criteria;
 # test4. Fourth, test the stopping condition of using a metric that is decreasing;
 # test5. Finally, test the stopping condition of using a metric that is increasing.
-test.GLM.Gaussian.RandomGrid.Test.SyntheticData <- function() {
+test.GLM.Binomial.RandomGrid.Test.SyntheticData <- function() {
   # set random seed to generate random dataset
   set.seed(as.integer(Sys.time()))
 
@@ -27,11 +27,11 @@ test.GLM.Gaussian.RandomGrid.Test.SyntheticData <- function() {
   max_col_count_ratio = 300
   min_col_count_ratio = 200
   
-  max_predictor_value = 50
-  min_predictor_value = -50
+  max_predictor_value = 3
+  min_predictor_value = -3
   
-  max_weight_value = 50
-  min_weight_value = -50
+  max_weight_value = 3
+  min_weight_value = -3
   
   # setup parameters that control random hyperparameter value generation
   max_int_val = 10
@@ -42,7 +42,7 @@ test.GLM.Gaussian.RandomGrid.Test.SyntheticData <- function() {
   min_real_val = 0
   min_time_val = 0  # meaningful lower bound for max_runtime_secs, determined later
   max_real_number = 5
-  time_scale = 2  # used to scale up the max_runtime_secs in hyper-parameters
+  time_scale = 1.2  # used to scale up the max_runtime_secs in hyper-parameters
   model_number_scale = 1
   max_runtime_scale = 1.5  # used to scale up the max_runtime_secs in search_criteria
   
@@ -67,20 +67,25 @@ test.GLM.Gaussian.RandomGrid.Test.SyntheticData <- function() {
 #     max_int_val = 1
 #     max_real_number = 1
   ##### ENd Debugging
-  
+
   # Setup up test, generate trainin data
-  training_dataset = genRegressionData(train_col_count, train_row_count, max_weight_value, min_weight_value,
-                                       max_predictor_value, min_predictor_value, noise_std)
+  training_dataset = genBinaryData(train_col_count, train_row_count, max_weight_value, min_weight_value,
+                                   max_predictor_value, min_predictor_value, noise_std)
   
   col_names = colnames(training_dataset)
-   predictor_names = col_names[1:train_col_count]
-   response_name = col_names[train_col_count+1]
+  predictor_names = col_names[1:train_col_count]
+  response_index = train_col_count+1
+  response_name = col_names[response_index]
 
   # convert R data frame to H2O dataframe
   train_data = as.h2o(training_dataset)
-  
-  # setup model parameters for GLM Gaussian
-  family = 'gaussian'
+  train_data[, response_index] = as.factor(train_data[, response_index])
+  if (!(length(h2o.levels(train_data[,response_index]))==2)) { # dataset does not contain both classes
+    stop(simpleError("Your dataset does not contain two class.  No test is conducted.  Please try again"))
+  }
+
+  # setup model parameters for GLM Binomial
+  family = 'binomial'
   nfolds = 5
   
   # get an estimate of how long it takes to train a model
@@ -116,7 +121,7 @@ test.GLM.Gaussian.RandomGrid.Test.SyntheticData <- function() {
   Log.info("************* Test1: Make sure randomized gridsearch generate all models.")
   print(search_criteria)  # print out search criteria used
   
-  grid_name = paste("myGLMGaussianGrid", as.integer(Sys.time()), sep="_")
+  grid_name = paste("myGLMBinomialGrid", as.integer(Sys.time()), sep="_")
   # start grid search 
   glm_grid1 = h2o.grid("glm", grid_id=grid_name, x=predictor_names, y=response_name, training_frame=train_data,
                        family=family, nfolds=nfolds, hyper_params=hyper_parameters, search_criteria=search_criteria)
@@ -138,7 +143,7 @@ test.GLM.Gaussian.RandomGrid.Test.SyntheticData <- function() {
   Log.info("************* Test2: Test max_models stopping criteria:")
   print(search_criteria)  # print out search criteria used
   
-  grid_name = paste("myGLMGaussianGrid", as.integer(Sys.time()), sep="_")
+  grid_name = paste("myGLMBinomialGrid", as.integer(Sys.time()), sep="_")
   # start grid search 
   glm_grid1 = h2o.grid("glm", grid_id=grid_name, x=predictor_names, y=response_name, training_frame=train_data,
                        family=family, nfolds=nfolds, hyper_params=hyper_parameters, search_criteria=search_criteria)
@@ -176,7 +181,7 @@ test.GLM.Gaussian.RandomGrid.Test.SyntheticData <- function() {
   Log.info("************* Test3: Test max_runtime_secs stopping criteria:")
   print(search_criteria)  # print out search criteria used
   
-  grid_name = paste("myGLMGaussianGrid", as.integer(Sys.time()), sep="_")
+  grid_name = paste("myGLMBinomialGrid", as.integer(Sys.time()), sep="_")
   # start grid search 
   glm_grid1 = h2o.grid("glm", grid_id=grid_name, x=predictor_names, y=response_name, training_frame=train_data,
                        family=family, nfolds=nfolds, hyper_params=hyper_parameters, search_criteria=search_criteria)
@@ -209,11 +214,11 @@ test.GLM.Gaussian.RandomGrid.Test.SyntheticData <- function() {
   search_criteria$stopping_tolerance = runif(1, 1e-8, max_tolerance)
   
   # use decreasing metric first
-  search_criteria$stopping_metric = "MSE"
-  Log.info("************* Test4: Test decreasing stopping metrics MSE:")
+  search_criteria$stopping_metric = "logloss"
+  Log.info("************* Test4: Test decreasing stopping metrics logloss:")
   print(search_criteria)  # print out search criteria used
   
-  grid_name = paste("myGLMGaussianGrid", as.integer(Sys.time()), sep="_")
+  grid_name = paste("myGLMBinomialGrid", as.integer(Sys.time()), sep="_")
   if (runGLMMetricStop(predictor_names, response_name, train_data, family, nfolds, hyper_parameters, search_criteria,
                        TRUE, correct_model_number,grid_name)) {
     test_failed_array[test_index] = 0
@@ -223,12 +228,12 @@ test.GLM.Gaussian.RandomGrid.Test.SyntheticData <- function() {
   test_index = test_index+1
   
   # use decreasing metric first
-  search_criteria$stopping_metric = "r2"
+  search_criteria$stopping_metric = "AUC"
   
-  Log.info("************* Test5: Test increasing stopping metrics r2:")
+  Log.info("************* Test5: Test increasing stopping metrics AUC:")
   print(search_criteria)  # print out search criteria used
   
-  grid_name = paste("myGLMGaussianGrid", as.integer(Sys.time()), sep="_")
+  grid_name = paste("myGLMBinomialGrid", as.integer(Sys.time()), sep="_")
   if (runGLMMetricStop(predictor_names, response_name, train_data, family, nfolds, hyper_parameters, search_criteria,
                        FALSE, correct_model_number, grid_name)) {
     test_failed_array[test_index] = 0
@@ -240,6 +245,5 @@ test.GLM.Gaussian.RandomGrid.Test.SyntheticData <- function() {
   }
 }
 
-doTest("GLM Gaussian Grid Test: PUBDEV-1843, subtask 9, check stopping conditions. ", 
-       test.GLM.Gaussian.RandomGrid.Test.SyntheticData)
+doTest("GLM Binomial Grid Test: PUBDEV-1843, subtask 9, check stopping conditions. ", test.GLM.Binomial.RandomGrid.Test.SyntheticData)
 
