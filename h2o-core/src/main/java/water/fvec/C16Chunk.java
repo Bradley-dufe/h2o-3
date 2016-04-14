@@ -28,10 +28,14 @@ public class C16Chunk extends Chunk {
   @Override boolean setNA_impl(int idx) { UnsafeUtils.set8(_mem, (idx << 4), _LO_NA); UnsafeUtils.set8(_mem,(idx<<4),_HI_NA); return true; }
   @Override public NewChunk inflate_impl(NewChunk nc) {
     nc.set_len(nc.set_sparseLen(0));
+
     for( int i=0; i< _len; i++ ) {
       long lo = UnsafeUtils.get8(_mem,(i<<4)  );
       long hi = UnsafeUtils.get8(_mem,(i << 4) + 8);
-      nc.addUUID(lo, hi);
+      if(lo == _LO_NA && hi == _HI_NA)
+        nc.addNA();
+      else
+        nc.addUUID(lo, hi);
     }
     return nc;
   }

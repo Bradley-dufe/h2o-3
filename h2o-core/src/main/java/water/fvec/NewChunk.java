@@ -440,7 +440,9 @@ public class NewChunk extends Chunk {
   //what about sparse reps?
   protected final boolean isNA2(int idx) {
     if (isString()) return _is[idx] == -1;
-    return _ds != null?Double.isNaN(_ds[idx]):_missing.size() > idx && _missing.get(idx);}
+    if(isUUID() || _ds == null) return _missing.get(idx);
+    return Double.isNaN(_ds[idx]);
+  }
   protected final boolean isCategorical2(int idx) {
     return _xs!=null && _xs.isCategorical(idx);
   }
@@ -460,20 +462,29 @@ public class NewChunk extends Chunk {
     ++_len;
   }
   public void addNA() {
-    if(_ds != null) {
-      addNum(Double.NaN);
-    } else  if(isString()){
-      addStr(null);
-    } else {
-      if(!_sparseNA && _sparseLen == _ms.len())
-        append2slow();
-      if(!_sparseNA) {
+    if(!_sparseNA) {
+      if (isString()) {
+        addStr(null);
+        return;
+      } else if (isUUID()) {
         _missing.set(_sparseLen);
+        _ds[_sparseLen] = Double.NaN;
+        ++_sparseLen;
+      } else if (_ds != null) {
+        _ds[_sparseLen] = Double.NaN;
         if (_id != null) _id[_sparseLen] = _len;
         ++_sparseLen;
+      } else {
+        if (!_sparseNA && _sparseLen == _ms.len())
+          append2slow();
+        if(!_sparseNA) {
+          _missing.set(_sparseLen);
+          if (_id != null) _id[_sparseLen] = _len;
+          ++_sparseLen;
+        }
       }
-      ++_len;
     }
+    ++_len;
   }
 
   public void addNum (long val, int exp) {
@@ -593,6 +604,7 @@ public class NewChunk extends Chunk {
     if( c.isNA(row) ) addNA();
     else { addStr(c.atStr(new BufferedString(), row)); _isAllASCII &= ((CStrChunk)c)._isAllASCII; }
   }
+
 
   // Append a UUID, stored in _ls & _ds
   public void addUUID( long lo, long hi ) {
@@ -1403,11 +1415,14 @@ public class NewChunk extends Chunk {
     for( int i = 0; i < _len; ++i ) {
       long lo = 0, hi=0;
       if( _id == null || _id.length == 0 || (j < _id.length && _id[j] == i ) ) {
-        lo = _ms.get(j);
-        hi = Double.doubleToRawLongBits(_ds[j++]);
-        if( _xs != null && _xs.get(j) == Integer.MAX_VALUE){// NA?
-          lo = Long.MIN_VALUE; hi = 0;                  // Canonical NA value
+        if(_missing.get(j)) {
+          lo = C16Chunk._LO_NA;
+          hi = C16Chunk._HI_NA;
+        } else {
+          lo = _ms.get(j);
+          hi = Double.doubleToRawLongBits(_ds[j]);
         }
+        j++;
       }
       UnsafeUtils.set8(bs, 16*i  , lo);
       UnsafeUtils.set8(bs, 16 * i + 8, hi);
