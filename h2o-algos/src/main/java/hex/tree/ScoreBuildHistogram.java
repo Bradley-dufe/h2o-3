@@ -1,12 +1,15 @@
 package hex.tree;
 
 import hex.Distribution;
+import water.Atomic;
 import water.H2O.H2OCountedCompleter;
 import water.MRTask;
 import water.fvec.C0DChunk;
 import water.fvec.Chunk;
 import water.util.ArrayUtils;
 import water.util.AtomicUtils;
+
+import java.util.Arrays;
 
 /**  Score and Build Histogram
  *
@@ -103,10 +106,10 @@ public class ScoreBuildHistogram extends MRTask<ScoreBuildHistogram> {
         if( isDecidedRow((int)nids.atd(row)) ) nnids[row] = -1;
 
     // Pass 2: accumulate all rows, cols into histograms
-//    if (_subset)
-//      accum_subset(chks,wrks,weight,nnids); //for debugging - simple code
-//    else
-      accum_all   (chks,wrks,weight,nnids); //generally faster
+    if (false)
+      accum_naive    (chks,wrks,weight,nnids);
+    else
+      accum_optimized(chks,wrks,weight,nnids);
   }
 
   @Override public void reduce( ScoreBuildHistogram sbh ) {
@@ -162,7 +165,7 @@ public class ScoreBuildHistogram extends MRTask<ScoreBuildHistogram> {
 
 // For debugging - simple code
   // All rows, some cols, accumulate histograms
-  private void accum_subset(Chunk chks[], Chunk wrks, Chunk weight, int nnids[]) {
+  private void accum_naive(Chunk chks[], Chunk wrks, Chunk weight, int nnids[]) {
     for( int row=0; row<nnids.length; row++ ) { // Over all rows
       int nid = nnids[row];                     // Get Node to decide from
       if( nid >= 0 ) {        // row already predicts perfectly or OOB
@@ -199,7 +202,7 @@ public class ScoreBuildHistogram extends MRTask<ScoreBuildHistogram> {
    * @param weight observation weights
    * @param nnids node ids
    */
-  private void accum_all(Chunk chks[], Chunk wrks, Chunk weight, int nnids[]) {
+  private void accum_optimized(Chunk chks[], Chunk wrks, Chunk weight, int nnids[]) {
     // Sort the rows by NID, so we visit all the same NIDs in a row
     // Find the count of unique NIDs in this chunk
     int nh[] = new int[_hcs.length+1];
@@ -219,6 +222,7 @@ public class ScoreBuildHistogram extends MRTask<ScoreBuildHistogram> {
     double bins[] = new double[Math.max(_nbins, _nbins_cats)];
     double sums[] = new double[Math.max(_nbins, _nbins_cats)];
     double ssqs[] = new double[Math.max(_nbins, _nbins_cats)];
+    double nas[] = new double[3];
     int cols = _ncols;
     int hcslen = hcs.length;
 
@@ -237,13 +241,13 @@ public class ScoreBuildHistogram extends MRTask<ScoreBuildHistogram> {
             chks[c].getDoubles(cs, 0, cs.length);
             extracted = true;
           }
-          overAllRows(cs, ys, ws, rows, hcs[n][c], n == 0 ? 0 : nh[n - 1], nh[n], bins, sums, ssqs);
+          overAllRows(cs, ys, ws, rows, hcs[n][c], n == 0 ? 0 : nh[n - 1], nh[n], bins, sums, ssqs, nas);
         }
       }
     }
   }
 
-  private static void overAllRows(double [] cs, double [] ys, double [] ws, int[] rows, final DHistogram rh, int lo, int hi, double[] bins, double[] sums, double[] ssqs) {
+  private static void overAllRows(double [] cs, double [] ys, double [] ws, int[] rows, final DHistogram rh, int lo, int hi, double[] bins, double[] sums, double[] ssqs, double[] nas) {
     if( rh==null ) return; // Ignore untracked columns in this split
     int rhbinslen = rh._bins.length;
     if( rhbinslen > bins.length) { // Grow bins if needed
@@ -251,11 +255,11 @@ public class ScoreBuildHistogram extends MRTask<ScoreBuildHistogram> {
       sums = new double[rhbinslen];
       ssqs = new double[rhbinslen];
     }
-    fillLocalHistoForNode(bins, sums, ssqs, ws, cs, ys, rh, rows, hi, lo);
-    bumpSharedHisto(bins,sums,ssqs,rh);
+    fillLocalHistoForNode(bins, sums, ssqs, ws, cs, ys, rh, rows, hi, lo, nas);
+    bumpSharedHisto(bins,sums,ssqs,rh,nas);
   }
 
-  static void bumpSharedHisto(double[]bins,double[]sums,double[]ssqs,DHistogram rh) {
+  static void bumpSharedHisto(double[]bins,double[]sums,double[]ssqs,DHistogram rh, double[] nas) {
     final int len = rh._bins.length;
     for( int b=0; b<len; b++ ) { // Bump counts in bins
       if( bins[b] != 0 ) { AtomicUtils.DoubleArray.add(rh._bins,b,bins[b]); bins[b]=0; }
@@ -263,9 +267,13 @@ public class ScoreBuildHistogram extends MRTask<ScoreBuildHistogram> {
     for( int b=0; b<len; b++ ) { // Bump counts in bins
       if( sums[b] != 0 || ssqs[b] != 0 ) { rh.incr1(b,sums[b],ssqs[b]); sums[b]=ssqs[b]=0; }
     }
+    AtomicUtils.DoubleArray.add(rh._nas,0,nas[0]);
+    AtomicUtils.DoubleArray.add(rh._nas,1,nas[1]);
+    AtomicUtils.DoubleArray.add(rh._nas,2,nas[2]);
+    Arrays.fill(nas,0);
   }
 
-  private static void fillLocalHistoForNode(double[] bins, double[] sums, double[] ssqs, double[] ws, double[] cs, double[] ys, DHistogram rh, int [] rows, int hi, int lo) {
+  private static void fillLocalHistoForNode(double[] bins, double[] sums, double[] ssqs, double[] ws, double[] cs, double[] ys, DHistogram rh, int [] rows, int hi, int lo, double[] nas) {
     double minmax[] = new double[]{rh._min2,rh._maxIn};
     // Gather all the data for this set of rows, for 1 column and 1 split/NID
     // Gather min/max, sums and sum-squares.
@@ -274,14 +282,20 @@ public class ScoreBuildHistogram extends MRTask<ScoreBuildHistogram> {
       double w = ws[k];
       if (w == 0) continue;
       double col_data = cs[k];
-      if( col_data < minmax[0] ) minmax[0] = col_data;
-      if( col_data > minmax[1] ) minmax[1] = col_data;
-      int b = rh.bin(col_data); // Compute bin# via linear interpolation
       double resp = ys[k];
-      double wy = w*resp;
-      bins[b] += w;                // Bump count in bin
-      sums[b] += wy;
-      ssqs[b] += wy*resp;
+      double wy = w * resp;
+      if (Double.isNaN(col_data)) {
+        nas[0] += w;
+        nas[1] += wy;
+        nas[2] += wy * resp;
+      } else {
+        if (col_data < minmax[0]) minmax[0] = col_data;
+        if (col_data > minmax[1]) minmax[1] = col_data;
+        int b = rh.bin(col_data); // Compute bin# via linear interpolation
+        bins[b] += w;                // Bump count in bin
+        sums[b] += wy;
+        ssqs[b] += wy * resp;
+      }
     }
     // Add all the data into the Histogram (atomically add)
     rh.setMin(minmax[0]);       // Track actual lower/upper bound per-bin

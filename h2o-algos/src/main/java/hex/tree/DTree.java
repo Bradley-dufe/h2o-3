@@ -220,7 +220,9 @@ public class DTree extends Iced {
         if( _col==j ) {
           switch( _equal ) {
           case 0:  // Ranged split; know something about the left & right sides
-            if( h._bins[_bin]==0 )
+            if( h._bins[_bin]==0 && _bin < nbins)
+              throw H2O.unimpl(); // Here I should walk up & down same as split() above.
+            if( h._bins[_bin]+h._nas[0]==0 && _bin == nbins)
               throw H2O.unimpl(); // Here I should walk up & down same as split() above.
             assert _bs==null : "splat not defined for BitSet splits";
             double split = splat;
@@ -459,14 +461,14 @@ public class DTree extends Iced {
 
     class FindSplits extends RecursiveAction {
       FindSplits(DHistogram[] hs, int col, int nid) {
-        _hs = hs; _col = col; _nid = nid;
+        _hs = hs[col]; _col=col; _nid = nid;
       }
-      final DHistogram[] _hs;
+      final DHistogram _hs;
       final int _col;
       DTree.Split _s;
       final int _nid;
       @Override public void compute() {
-        _s = _hs[_col].scoreMSE(_col, _tree._min_rows, _nid);
+        _s = _hs.scoreMSE(_col, _tree._min_rows, _nid);
       }
     }
 

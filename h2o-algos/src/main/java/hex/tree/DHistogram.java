@@ -45,6 +45,8 @@ public final class DHistogram extends Iced {
   public final double _min, _maxEx; // Conservative Min/Max over whole collection.  _maxEx is Exclusive.
   public double _bins[];   // Bins, shared, atomically incremented
   private double _sums[], _ssqs[]; // Sums & square-sums, shared, atomically incremented
+  public double _nas[];
+//  private float _splitPts[]; // random split points between _min and _maxEx (instead of _delta)
 
   // Atomically updated double min/max
   protected    double  _min2, _maxIn; // Min/Max, shared, atomically updated.  _maxIn is Inclusive.
@@ -58,18 +60,6 @@ public final class DHistogram extends Iced {
     } catch( Exception e ) {
       throw H2O.fail();
     }
-  }
-
-  public static int[] activeColumns(DHistogram[] hist) {
-    int[] cols = new int[hist.length];
-    int len=0;
-    for( int i=0; i<hist.length; i++ ) {
-      if (hist[i]==null) continue;
-      assert hist[i]._min < hist[i]._maxEx && hist[i].nbins() > 1 : "broken histo range "+ hist[i];
-      cols[len++] = i;        // Gather active column
-    }
-//    cols = Arrays.copyOfRange(cols, len, hist.length);
-    return cols;
   }
 
   public void setMin( double min ) {
@@ -114,7 +104,7 @@ public final class DHistogram extends Iced {
 
   // Interpolate d to find bin#
   public int bin( double col_data ) {
-    if( Double.isNaN(col_data) ) return _bins.length-1; // NAs go right, and for numeric features, this is consistent
+    assert( !Double.isNaN(col_data) );
     if (Double.isInfinite(col_data)) // Put infinity to most left/right bin
       if (col_data<0) return 0;
       else return _bins.length-1;
@@ -127,7 +117,7 @@ public final class DHistogram extends Iced {
     if( idx1 == _bins.length) idx1--; // Roundoff error allows idx1 to hit upper bound, so truncate
     return idx1;
   }
-  public double binAt( int b ) { return _min+b/_step; }
+  public double binAt( int b ) { assert(b>=0); return _min+b/_step; }
 
   public int nbins() { return _nbin; }
   public double bins(int b) { return _bins[b]; }
@@ -136,7 +126,14 @@ public final class DHistogram extends Iced {
   public void init() {
     assert _bins == null;
     _bins = MemoryManager.malloc8d(_nbin);
-    init0();
+    _sums = MemoryManager.malloc8d(_nbin);
+    _ssqs = MemoryManager.malloc8d(_nbin);
+    _nas = MemoryManager.malloc8d(3);
+//    _splitPts = new float[nbins];
+//    Random rng = RandomUtils.getRNG(name.hashCode() + 0xDECAF*nbins);
+//    for (int i=0;i<nbins;++i)
+//      _splitPts[i] = rng.nextFloat();
+//    Arrays.sort(_splitPts);
   }
 
   // Add one row to a bin found via simple linear interpolation.
@@ -144,14 +141,22 @@ public final class DHistogram extends Iced {
   // Compute response mean & variance.
   void incr( double col_data, double y, double w ) {
     assert Double.isNaN(col_data) || Double.isInfinite(col_data) || (_min <= col_data && col_data < _maxEx) : "col_data "+col_data+" out of range "+this;
-    int b = bin(col_data);      // Compute bin# via linear interpolation
-    water.util.AtomicUtils.DoubleArray.add(_bins,b,w); // Bump count in bin
+    if (Double.isNaN(col_data)) {
+      water.util.AtomicUtils.DoubleArray.add(_nas, 0, w); // Bump count in bin
+      if( y != 0 && w != 0) {
+        water.util.AtomicUtils.DoubleArray.add(_nas, 1, w*y); // Bump count in bin
+        water.util.AtomicUtils.DoubleArray.add(_nas, 2, w*y*y); // Bump count in bin
+      }
+    } else {
+      int b = bin(col_data);      // Compute bin# via linear interpolation
+      water.util.AtomicUtils.DoubleArray.add(_bins, b, w); // Bump count in bin
+      if (y != 0 && w != 0) incr0(b, y, w);
+    }
     // Track actual lower/upper bound per-bin
-    if (!Double.isInfinite(col_data)) {
+    if (!Double.isInfinite(col_data) && !Double.isNaN(col_data)) {
       setMin(col_data);
       setMax(col_data);
     }
-    if( y != 0 && w != 0) incr0(b,y,w);
   }
 
   // Merge two equal histograms together.  Done in a F/J reduce, so no
@@ -159,12 +164,14 @@ public final class DHistogram extends Iced {
   public void add( DHistogram dsh ) {
     assert _isInt == dsh._isInt && _nbin == dsh._nbin && _step == dsh._step &&
       _min == dsh._min && _maxEx == dsh._maxEx;
-    assert (_bins == null && dsh._bins == null) || (_bins != null && dsh._bins != null);
-    if( _bins == null ) return;
+    assert (_bins == null && dsh._bins == null && _nas == null && dsh._nas == null) || (_bins != null && dsh._bins != null && _nas != null && dsh._nas != null);
+    if( _bins == null && _nas == null) return;
     ArrayUtils.add(_bins,dsh._bins);
+    ArrayUtils.add(_sums,dsh._sums);
+    ArrayUtils.add(_ssqs,dsh._ssqs);
+    ArrayUtils.add(_nas, dsh._nas);
     if( _min2  > dsh._min2  ) _min2  = dsh._min2 ;
     if( _maxIn < dsh._maxIn ) _maxIn = dsh._maxIn;
-    add0(dsh);
   }
 
   // Inclusive min & max
@@ -199,26 +206,6 @@ public final class DHistogram extends Iced {
     return new DHistogram(name,nbins, nbins_cats, isInt, min, maxEx, minSplitImprovement);
   }
 
-  // Check for a constant response variable
-  private boolean isConstantResponse() {
-    double m = Double.NaN;
-    for( int b=0; b<_bins.length; b++ ) {
-      if( _bins[b] == 0 ) continue;
-      if( var(b) > 1e-6) {
-        Log.warn("Response should be constant, but variance of bin " + b + " (out of " + _bins.length + ") is " + var(b));
-        return false;
-      }
-      double mean = mean(b);
-      if( mean != m )
-        if( Double.isNaN(m) ) m=mean; // Capture mean of first non-empty bin
-        else if( !MathUtils.compare(m,mean,1e-3/*abs*/,1e-3/*rel*/) ) {
-          Log.warn("Response should be constant, but mean of first non-empty bin is " + m + ", but another bin (" + b + ") has mean(b) = " + mean);
-          return false;
-        }
-    }
-    return true;
-  }
-
   // Pretty-print a histogram
   @Override public String toString() {
     StringBuilder sb = new StringBuilder();
@@ -234,6 +221,10 @@ public final class DHistogram extends Iced {
   }
   double mean(int b) {
     double n = _bins[b];
+    if (b==_bins.length-1) {
+      n+=_nas[0];
+      return n>0 ? (_sums[b]+_nas[1])/n : 0;
+    }
     return n>0 ? _sums[b]/n : 0;
   }
 
@@ -245,12 +236,11 @@ public final class DHistogram extends Iced {
   public double var (int b) {
     double n = _bins[b];
     if( n<=1 ) return 0;
+    if (b==_bins.length-1) {
+      n+=_nas[0];
+      return Math.max(0, (_ssqs[b]+_nas[2] - (_sums[b]*_sums[b]+_nas[1]*_nas[1])/n)/(n-1)); //not strictly consistent with what is done elsewhere (use n instead of n-1 to get there)
+    }
     return Math.max(0, (_ssqs[b] - _sums[b]*_sums[b]/n)/(n-1)); //not strictly consistent with what is done elsewhere (use n instead of n-1 to get there)
-  }
-  // Big allocation of arrays
-  void init0() {
-    _sums = MemoryManager.malloc8d(_nbin);
-    _ssqs = MemoryManager.malloc8d(_nbin);
   }
 
   // Add one row to a bin found via simple linear interpolation.
@@ -266,13 +256,6 @@ public final class DHistogram extends Iced {
     AtomicUtils.DoubleArray.add(_ssqs,b,yy);
   }
 
-  // Merge two equal histograms together.
-  // Done in a F/J reduce, so no synchronization needed.
-  public void add0( DHistogram dsh ) {
-    ArrayUtils.add(_sums,dsh._sums);
-    ArrayUtils.add(_ssqs,dsh._ssqs);
-  }
-
   // Compute a "score" for a column; lower score "wins" (is a better split).
   // Score is the sum of the MSEs when the data is split at a single point.
   // mses[1] == MSE for splitting between bins  0  and 1.
@@ -284,9 +267,9 @@ public final class DHistogram extends Iced {
     // Histogram arrays used for splitting, these are either the original bins
     // (for an ordered predictor), or sorted by the mean response (for an
     // unordered predictor, i.e. categorical predictor).
+    double[] bins = _bins;
     double[] sums = _sums;
     double[] ssqs = _ssqs;
-    double[] bins = _bins;
     int idxs[] = null;          // and a reverse index mapping
 
     // For categorical (unordered) predictors, sort the bins by average
@@ -299,33 +282,39 @@ public final class DHistogram extends Iced {
       for( int i=0; i<nbins+1; i++ ) idxs[i] = i;
       final double[] avgs = MemoryManager.malloc8d(nbins+1);
       for( int i=0; i<nbins; i++ ) avgs[i] = _bins[i]==0 ? 0 : _sums[i]/_bins[i]; // Average response
+      avgs[nbins-1] += _nas[0]==0 ? 0 : _nas[1]/_nas[0];
       avgs[nbins] = Double.MAX_VALUE;
       ArrayUtils.sort(idxs, avgs);
       // Fill with sorted data.  Makes a copy, so the original data remains in
       // its original order.
+      bins = MemoryManager.malloc8d(nbins);
       sums = MemoryManager.malloc8d(nbins);
       ssqs = MemoryManager.malloc8d(nbins);
-      bins = MemoryManager.malloc8d(nbins);
       for( int i=0; i<nbins; i++ ) {
+        bins[i] = _bins[idxs[i]];
         sums[i] = _sums[idxs[i]];
         ssqs[i] = _ssqs[idxs[i]];
-        bins[i] = _bins[idxs[i]];
       }
     }
 
     // Compute mean/var for cumulative bins from 0 to nbins inclusive.
+    double   ns0[] = MemoryManager.malloc8d(nbins+1);
     double sums0[] = MemoryManager.malloc8d(nbins+1);
     double ssqs0[] = MemoryManager.malloc8d(nbins+1);
-    double   ns0[] = MemoryManager.malloc8d(nbins+1);
     for( int b=1; b<=nbins; b++ ) {
+      double k0 = ns0  [b-1],  k1 = bins[b-1];
       double m0 = sums0[b-1],  m1 = sums[b-1];
       double s0 = ssqs0[b-1],  s1 = ssqs[b-1];
-      double k0 = ns0  [b-1],  k1 = bins[b-1];
+      if (b==nbins) {
+        k1 += _nas[0];
+        m1 += _nas[1];
+        s1 += _nas[2];
+      }
       if( k0==0 && k1==0 )
         continue;
+      ns0  [b] = k0+k1;
       sums0[b] = m0+m1;
       ssqs0[b] = s0+s1;
-      ns0  [b] = k0+k1;
     }
     double tot = ns0[nbins];
     // Is any split possible with at least min_obs?
@@ -336,7 +325,6 @@ public final class DHistogram extends Iced {
     // but we might have NA's in THIS column...
     double var = ssqs0[nbins]*tot - sums0[nbins]*sums0[nbins];
     if( var == 0 ) {
-//      assert isConstantResponse();
       return null;
     }
     // If variance is really small, then the predictions (which are all at
@@ -346,18 +334,23 @@ public final class DHistogram extends Iced {
       return null;
 
     // Compute mean/var for cumulative bins from nbins to 0 inclusive.
+    double   ns1[] = MemoryManager.malloc8d(nbins+1);
     double sums1[] = MemoryManager.malloc8d(nbins+1);
     double ssqs1[] = MemoryManager.malloc8d(nbins+1);
-    double   ns1[] = MemoryManager.malloc8d(nbins+1);
     for( int b=nbins-1; b>=0; b-- ) {
+      double k0 = ns1  [b+1], k1 = bins[b];
       double m0 = sums1[b+1], m1 = sums[b];
       double s0 = ssqs1[b+1], s1 = ssqs[b];
-      double k0 = ns1  [b+1], k1 = bins[b];
+      if (b==(nbins-1)) {
+        k1 += _nas[0];
+        m1 += _nas[1];
+        s1 += _nas[2];
+      }
       if( k0==0 && k1==0 )
         continue;
+      ns1  [b] = k0+k1;
       sums1[b] = m0+m1;
       ssqs1[b] = s0+s1;
-      ns1  [b] = k0+k1;
       assert MathUtils.compare(ns0[b]+ns1[b],tot,1e-5,1e-5);
     }
 
@@ -371,7 +364,8 @@ public final class DHistogram extends Iced {
     double best_se1=Double.MAX_VALUE;   // Best squared error
     byte equal=0;                       // Ranged check
     for( int b=1; b<=nbins-1; b++ ) {
-      if( bins[b] == 0 ) continue; // Ignore empty splits
+      if( b < nbins-1 && bins[b] == 0 ) continue; // Ignore empty splits
+      if( b == nbins-1 && bins[b]+_nas[0] == 0 ) continue; // Ignore empty splits
       if( ns0[b] < min_rows ) continue;
       if( ns1[b] < min_rows ) break; // ns1 shrinks at the higher bin#s, so if it fails once it fails always
       // We're making an unbiased estimator, so that MSE==Var.
@@ -397,7 +391,8 @@ public final class DHistogram extends Iced {
     if( _isInt > 0 && _step == 1.0f &&    // For any integral (not float) column
             _maxEx-_min > 2 && idxs==null ) { // Also need more than 2 (boolean) choices to actually try a new split pattern
       for( int b=1; b<=nbins-1; b++ ) {
-        if( bins[b] < min_rows ) continue; // Ignore too small splits
+        if( b<nbins-1 && bins[b] < min_rows ) continue; // Ignore too small splits
+        if( b==nbins-1 && bins[b]+_nas[0] < min_rows ) continue; // Ignore too small splits
         double N = ns0[b] + ns1[b+1];
         if( N < min_rows )
           continue; // Ignore too small splits
@@ -405,6 +400,7 @@ public final class DHistogram extends Iced {
         double ssqs2 = ssqs0[b  ]+ssqs1[b+1];
         double si =    ssqs2     -sums2  *sums2  /   N   ; // Left+right, excluding 'b'
         double sx =    ssqs [b]  -sums[b]*sums[b]/bins[b]; // Just 'b'
+        if (b==nbins-1) sx += _nas[2] - _nas[1]*_nas[1]/_nas[0];
         if( si < 0 ) si = 0;    // Roundoff error; sometimes goes negative
         if( sx < 0 ) sx = 0;    // Roundoff error; sometimes goes negative
         if( si+sx < best_se0+best_se1 ) { // Strictly less error?
@@ -434,9 +430,9 @@ public final class DHistogram extends Iced {
     //if( se <= best_se0+best_se1) return null; // Ultimately roundoff error loses, and no split actually helped
     if (!(best_se0+best_se1 < se * (1- _minSplitImprovement))) return null; // Ultimately roundoff error loses, and no split actually helped
     double n0 = equal != 1 ?   ns0[best] :   ns0[best]+  ns1[best+1];
-    double n1 = equal != 1 ?   ns1[best] :  bins[best]              ;
+    double n1 = equal != 1 ?   ns1[best] :  (bins[best] + best==nbins ? _nas[0] : 0);
     double p0 = equal != 1 ? sums0[best] : sums0[best]+sums1[best+1];
-    double p1 = equal != 1 ? sums1[best] :  sums[best]              ;
+    double p1 = equal != 1 ? sums1[best] :  (sums[best] + best==nbins ? _nas[1] : 0);
     if( MathUtils.equalsWithinOneSmallUlp((float)(p0/n0),(float)(p1/n1)) ) return null; // No difference in predictions, which are all at 1 float ULP
     return new DTree.Split(col,best,bs,equal,se,best_se0,best_se1,n0,n1,p0/n0,p1/n1);
   }
